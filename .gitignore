@@ -1,0 +1,16 @@
+bin/
+build/
+data/
+.idea/
+.vscode/
+curl/
+*.o
+*.d
+*.so
+*.a
+*.exe
+*.out
+*.log
+*.txt
+*.csv
+*.json
