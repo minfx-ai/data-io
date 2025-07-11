@@ -127,22 +127,24 @@ static void usage(const char* prog) {
   fprintf(stderr,
           "Usage: %s [options]\n\n"
           "Options (defaults in brackets):\n"
-          "  --window_len=N      Samples per window           [1024]\n"
-          "  --feat_size=N       Features per sample          [256]\n"
-          "  --float_size=N      Bytes per scalar (2|4)       [2]\n"
-          "  --batch_size=N      Records per GPU launch       [512]\n"
-          "  --n_producers=N     Producer processes           [12]\n"
-          "  --max_batches=N     Max batches to produce       [128]\n"
-          "  --use_hugepages     Use hugepages                [0]\n"
-          "  --dry_run=0         Normal run (default)\n"
-          "  --dry_run=1         Dry run (no libcurl loading)\n"
-          "  --dry_run=2         Dry run (no GPU computation)\n"
-          "  -h, --help          Show this message\n",
+          "  --local_rank=N    Local rank of GPU (-1 from LOCAL_RANK env) [0]\n"
+          "  --window_len=N    Samples per window           [1024]\n"
+          "  --feat_size=N     Features per sample          [256]\n"
+          "  --float_size=N    Bytes per scalar (2|4)       [2]\n"
+          "  --batch_size=N    Records per GPU launch       [512]\n"
+          "  --n_producers=N   Producer processes           [12]\n"
+          "  --max_batches=N   Max batches to produce       [128]\n"
+          "  --use_hugepages   Use hugepages                [0]\n"
+          "  --dry_run=0       Normal run (default)\n"
+          "  --dry_run=1       Dry run (no libcurl loading)\n"
+          "  --dry_run=2       Dry run (no GPU computation)\n"
+          "  -h, --help        Show this message\n",
           prog);
   exit(EXIT_FAILURE); // syscall!
 }
 
 typedef struct __attribute__((aligned(64))) {
+    int32_t local_rank;      // local rank of GPU
     uint32_t window_len;      // samples per window
     uint32_t feat_size;       // features per sample
     uint32_t float_size;      // bytes per scalar (2 = fp16, 4 = fp32)
@@ -162,6 +164,7 @@ typedef struct __attribute__((aligned(64))) {
 
 static Config parse_config(int argc, char** argv) {
   Config c = {
+      .local_rank    = 0,
       .window_len    = 1024,
       .feat_size     = 256,
       .float_size    = 2,
@@ -173,6 +176,7 @@ static Config parse_config(int argc, char** argv) {
   };
 
   static const struct option opts[] = {
+      {"local_rank",     required_argument, 0, 'l'},
       {"window_len",     required_argument, 0, 'w'},
       {"feat_size",      required_argument, 0, 'f'},
       {"float_size",     required_argument, 0, 's'},
@@ -189,6 +193,7 @@ static Config parse_config(int argc, char** argv) {
   while ((opt = getopt_long(argc, argv, "w:f:s:b:n:t:u:d:h", 
                             (struct option *)opts, NULL)) != -1) {
       switch (opt) {
+          case 'l': c.local_rank    = (int32_t)  strtol(optarg, NULL, 0); break;
           case 'w': c.window_len    = (uint32_t)strtoul(optarg, NULL, 0); break;
           case 'f': c.feat_size     = (uint32_t)strtoul(optarg, NULL, 0); break;
           case 's': c.float_size    = (uint32_t)strtoul(optarg, NULL, 0); break;
@@ -214,6 +219,18 @@ static Config parse_config(int argc, char** argv) {
       fprintf(stderr, "n_producers capped at %d\n", MAX_PRODUCERS);
       exit(EXIT_FAILURE); // syscall!
   }
+
+  if (c.local_rank == -1) {
+    const char* local_rank_str = getenv("LOCAL_RANK");
+    if (local_rank_str) {
+        c.local_rank = atoi(local_rank_str);
+    } else {
+        fprintf(stderr, "Auto discovery of LOCAL_RANK was set, "
+                        "but env was not set, using default rank 0\n");
+        c.local_rank = 0;
+    }
+  }
+
   return c;
 }
 
@@ -394,6 +411,9 @@ static inline void gpu_init(SharedHeader *shm) {
     DEBUG_PRINT("gpu_init: initializing %d buffers\n", NBUF);
     DEBUG_PRINT("gpu_init: allocating in total: %ld MiB\n", 
                 NBUF * cfg->batch_bytes / (1 << 20));
+
+    cudaSetDevice(cfg->local_rank);
+
     for (int i = 0; i < NBUF; ++i) {
         cudaMalloc(&d_buffers[i], cfg->batch_bytes);
         cudaStreamCreate(&streams[i]);
@@ -1062,6 +1082,7 @@ int main(int argc, char **argv)
     fprintf(stdout, "Max batches         : %u\n", cfg.max_batches);
     fprintf(stdout, "Use hugepages       : %u\n", cfg.use_hugepages);
     fprintf(stdout, "Dry run             : %u\n", cfg.dry_run);
+    fprintf(stdout, "Local rank          : %d\n", cfg.local_rank);
     fprintf(stdout, "----------- Inferred -------------\n");
     fprintf(stdout, "Slot size           : %.2f KiB\n", (double)cfg.slot_bytes / 1024);
     fprintf(stdout, "Payload per batch   : %.2f MiB (%lu bytes)\n",
